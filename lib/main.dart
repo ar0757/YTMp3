@@ -43,7 +43,7 @@ class _DownloaderScreenState extends State<DownloaderScreen> {
   double? _downloadProgress;
 
   // Replace with your CloudConvert API key
-  final String _apiKey = 'YOUR_CLOUDCONVERT_API_KEY';
+  final String _apiKey = 'eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJhdWQiOiIxIiwianRpIjoiNDVhNDRkNGM4MGNiMDIwMGM2MmM3NzIyZjAxNzcwOGU2MjRmZWZkMWRjYjA1ZTIwM2MxYjAyODFiZDY4OWU3OTZlOWZhZGYxNTg2OTk0YzgiLCJpYXQiOjE3NDM2OTYzODQuODUwODM5LCJuYmYiOjE3NDM2OTYzODQuODUwODQxLCJleHAiOjQ4OTkzNjk5ODQuODQ0OTU2LCJzdWIiOiI3MTUzMTc4NyIsInNjb3BlcyI6WyJ0YXNrLndyaXRlIiwid2ViaG9vay53cml0ZSIsInByZXNldC53cml0ZSIsInVzZXIud3JpdGUiLCJ0YXNrLnJlYWQiLCJ3ZWJob29rLnJlYWQiLCJwcmVzZXQucmVhZCJdfQ.S4mThTXlt0ovq033BCkjywgkdHynnCUpk751M1K2a46u4MeOqikVbz2pny0x6RC_8gQON8CF4gDMenMeUkL2CXIF4X8p-bTJAzJ_fnoK069AVD3r5T3y_UekjOtye1pf2lL-6sIPOQq6Qa86NYfcnmWpFbUJGyo8QdIZGoe96ihNWRr74JOIV9jdDGDys2nLOTYm1k3801mzqh0rVGsnvRiW3JB0qKfp3GjoaPpNSoR9gr8pR_tz1NeV1Y5Y0L0iYfbzNClt8Lt25UrSDhzk9wnQx0hIb2mRA01uw3O4H1v_KbLuAw57Ov1zrZmQ-lKHCfLFo8vh0364EGmtRSEqJFcsnTY5S4620BnRRg2sXjkMPG8D8MAKOCONdlm7UOte2xTMhE_TVTQ7ML16MojkroSbjMhdhhso5Ynjs8NXHpqUPgYgQ1dOO1mw7mKDwd_7Jx189NGTqRfCXWpr9NPAbX_D7PQDowL5naSQJXoRjfEqCuWpjF0K-lXW1H1xoj5FIGQZLb5JhXcNamhQF67tYMWETpAYn4_aQRZE0C_uKb7-tWzA34NbuvPR4ATS6n_Tjc-kZCkppj7MdRzjgXjAFqGiymmOBtj6TshtE8C0CEKQIXCc9n3919nB7I0Nq0gjUXIZwTN42p60S0NfoGcb0lu-q6vv8bexsaRhLzNoLSc';
 
   Future<bool> _requestPermissions() async {
     if (Platform.isAndroid && (await _getAndroidVersion()) >= 33) {
@@ -115,8 +115,11 @@ class _DownloaderScreenState extends State<DownloaderScreen> {
 
       var stream = yt.videos.streamsClient.get(streamInfo);
       var appDir = await getExternalStorageDirectory();
+      if (appDir == null) {
+        throw Exception('Failed to get external storage directory');
+      }
       var safeTitle = video.title.replaceAll(RegExp(r'[<>:"/\\|?*]'), '_');
-      var m4aPath = '${appDir!.path}/$safeTitle.m4a';
+      var m4aPath = '${appDir.path}/$safeTitle.m4a';
       var tempMp3Path = '${appDir.path}/$safeTitle.mp3';
       var m4aFile = File(m4aPath);
 
@@ -169,23 +172,40 @@ class _DownloaderScreenState extends State<DownloaderScreen> {
         }),
       );
 
+      print('Job Response Status: ${jobResponse.statusCode}');
+      print('Job Response Body: ${jobResponse.body}');
+
       if (jobResponse.statusCode != 201) {
         throw Exception('Failed to create job: ${jobResponse.body}');
       }
 
       var jobData = jsonDecode(jobResponse.body);
-      var jobId = jobData['data']['id'];
+      if (jobData['data'] == null) {
+        throw Exception('Job data is null: ${jobResponse.body}');
+      }
+      var jobId = jobData['data']['id'] as String?;
 
-      var uploadTask = jobData['data']['tasks']
-          .firstWhere((t) => t['name'] == 'import-my-file');
-      var uploadUrl = uploadTask['result']['form']['url'];
-      var formData = uploadTask['result']['form']['parameters'];
+      var uploadTask = jobData['data']['tasks']?.firstWhere(
+            (t) => t['name'] == 'import-my-file',
+            orElse: () => null,
+          );
+      if (uploadTask == null) {
+        throw Exception('Upload task not found: ${jobResponse.body}');
+      }
+      var uploadUrl = uploadTask['result']?['form']?['url'] as String?;
+      var formData = uploadTask['result']?['form']?['parameters'] as Map?;
+      if (uploadUrl == null || formData == null) {
+        throw Exception('Upload URL or form data is null: $uploadTask');
+      }
 
       var request = http.MultipartRequest('POST', Uri.parse(uploadUrl));
       formData.forEach((key, value) => request.fields[key] = value.toString());
       request.files.add(await http.MultipartFile.fromPath('file', m4aPath));
       var uploadResponse = await request.send();
       var uploadResponseBody = await uploadResponse.stream.bytesToString();
+
+      print('Upload Response Status: ${uploadResponse.statusCode}');
+      print('Upload Response Body: $uploadResponseBody');
 
       if (uploadResponse.statusCode != 201) {
         throw Exception(
@@ -206,13 +226,15 @@ class _DownloaderScreenState extends State<DownloaderScreen> {
           headers: {'Authorization': 'Bearer $_apiKey'},
         );
         var statusData = jsonDecode(statusResponse.body);
-        var exportTask = statusData['data']['tasks']
-            .firstWhere((t) => t['name'] == 'export-my-file', orElse: () => null);
-        if (statusData['data']['status'] == 'finished' && exportTask != null) {
-          downloadUrl = exportTask['result']['files'][0]['url'];
-        } else if (statusData['data']['status'] == 'error') {
+        var exportTask = statusData['data']?['tasks']?.firstWhere(
+              (t) => t['name'] == 'export-my-file',
+              orElse: () => null,
+            );
+        if (statusData['data']?['status'] == 'finished' && exportTask != null) {
+          downloadUrl = exportTask['result']?['files']?[0]?['url'] as String?;
+        } else if (statusData['data']?['status'] == 'error') {
           throw Exception(
-              'Conversion failed: ${statusData['data']['tasks'][0]['message']}');
+              'Conversion failed: ${statusData['data']['tasks']?[0]?['message'] ?? 'Unknown error'}');
         }
         attempts++;
       }
