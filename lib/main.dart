@@ -184,14 +184,24 @@ class _DownloaderScreenState extends State<DownloaderScreen> {
         throw Exception('Job data is null: ${jobResponse.body}');
       }
       var jobId = jobData['data']['id'] as String?;
+      if (jobId == null) {
+        throw Exception('Job ID is null: ${jobResponse.body}');
+      }
 
-      var uploadTask = jobData['data']['tasks']?.firstWhere(
-            (t) => t['name'] == 'import-my-file',
-            orElse: () => null,
-          );
-      if (uploadTask == null) {
+      var tasks = jobData['data']['tasks'] as List?;
+      if (tasks == null) {
+        throw Exception('Tasks list is null: ${jobResponse.body}');
+      }
+      
+      dynamic uploadTask;
+      try {
+        uploadTask = tasks.firstWhere(
+          (t) => t['name'] == 'import-my-file',
+        );
+      } catch (e) {
         throw Exception('Upload task not found: ${jobResponse.body}');
       }
+      
       var uploadUrl = uploadTask['result']?['form']?['url'] as String?;
       var formData = uploadTask['result']?['form']?['parameters'] as Map?;
       if (uploadUrl == null || formData == null) {
@@ -226,15 +236,31 @@ class _DownloaderScreenState extends State<DownloaderScreen> {
           headers: {'Authorization': 'Bearer $_apiKey'},
         );
         var statusData = jsonDecode(statusResponse.body);
-        var exportTask = statusData['data']?['tasks']?.firstWhere(
+        
+        var statusTasks = statusData['data']?['tasks'] as List?;
+        dynamic exportTask;
+        if (statusTasks != null) {
+          try {
+            exportTask = statusTasks.firstWhere(
               (t) => t['name'] == 'export-my-file',
-              orElse: () => null,
             );
+          } catch (e) {
+            // Export task not found yet, continue polling
+            exportTask = null;
+          }
+        }
+        
         if (statusData['data']?['status'] == 'finished' && exportTask != null) {
-          downloadUrl = exportTask['result']?['files']?[0]?['url'] as String?;
+          var files = exportTask['result']?['files'] as List?;
+          if (files != null && files.isNotEmpty) {
+            downloadUrl = files[0]?['url'] as String?;
+          }
         } else if (statusData['data']?['status'] == 'error') {
-          throw Exception(
-              'Conversion failed: ${statusData['data']['tasks']?[0]?['message'] ?? 'Unknown error'}');
+          var errorMessage = 'Unknown error';
+          if (statusTasks != null && statusTasks.isNotEmpty) {
+            errorMessage = statusTasks[0]?['message'] ?? 'Unknown error';
+          }
+          throw Exception('Conversion failed: $errorMessage');
         }
         attempts++;
       }
