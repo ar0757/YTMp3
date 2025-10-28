@@ -106,12 +106,47 @@ class _DownloaderScreenState extends State<DownloaderScreen> {
       _downloadProgress = 0.0;
     });
 
+    YoutubeExplode? yt;
     try {
-      var yt = YoutubeExplode();
-      var video = await yt.videos.get(url);
-      var streamInfo = (await yt.videos.streamsClient.getManifest(url))
-          .audioOnly
-          .withHighestBitrate();
+      yt = YoutubeExplode();
+      
+      print('DEBUG: Fetching video info for: $url');
+      // Add timeout to prevent hanging
+      var video = await yt.videos.get(url).timeout(
+        const Duration(seconds: 30),
+        onTimeout: () {
+          throw Exception('Failed to fetch video information. Connection timed out.');
+        },
+      );
+      print('DEBUG: Video fetched - Title: ${video.title}');
+      
+      print('DEBUG: Fetching stream manifest...');
+      var manifest = await yt.videos.streamsClient.getManifest(url).timeout(
+        const Duration(seconds: 30),
+        onTimeout: () {
+          throw Exception('Failed to fetch audio streams. Connection timed out.');
+        },
+      );
+      
+      print('DEBUG: Manifest fetched. Audio streams count: ${manifest.audioOnly.length}');
+      print('DEBUG: All audio streams:');
+      for (var stream in manifest.audioOnly) {
+        print('  - Bitrate: ${stream.bitrate}, Container: ${stream.container}, Size: ${stream.size}');
+      }
+      
+      // Check if audio streams exist
+      if (manifest.audioOnly.isEmpty) {
+        throw Exception('No audio streams available for this video. This might be due to YouTube restrictions or the library needing an update.');
+      }
+      
+      var streamInfo = manifest.audioOnly.withHighestBitrate();
+      
+      // Additional null check
+      if (streamInfo == null) {
+        throw Exception('Failed to get audio stream information.');
+      }
+      
+      print('DEBUG: Selected stream - Bitrate: ${streamInfo.bitrate}, Size: ${streamInfo.size}');
 
       var stream = yt.videos.streamsClient.get(streamInfo);
       var appDir = await getExternalStorageDirectory();
@@ -127,7 +162,14 @@ class _DownloaderScreenState extends State<DownloaderScreen> {
       int totalBytes = streamInfo.size.totalBytes;
       int receivedBytes = 0;
 
-      await for (var chunk in stream) {
+      // Add timeout for the download stream
+      await for (var chunk in stream.timeout(
+        const Duration(minutes: 10),
+        onTimeout: (sink) {
+          sink.close();
+          throw Exception('Download timed out. Please check your internet connection.');
+        },
+      )) {
         receivedBytes += chunk.length;
         setState(() {
           _downloadProgress = receivedBytes / totalBytes;
@@ -292,11 +334,16 @@ class _DownloaderScreenState extends State<DownloaderScreen> {
       setState(() {
         _status = 'Download Completed! Saved as $finalMp3Path';
       });
-    } catch (e) {
+    } catch (e, stackTrace) {
+      print('ERROR: $e');
+      print('STACK TRACE: $stackTrace');
       setState(() {
         _status = 'Failed: $e';
         _downloadProgress = null;
       });
+    } finally {
+      // Always close the YoutubeExplode client to free resources
+      yt?.close();
     }
   }
 
